@@ -28,3 +28,9 @@ Security findings can be shared privately with the repository maintainers at Cul
 - Cron schedules persist in SQLite, but they trigger only while the daemon is running.
 
 - Stale executor results after cancel/retry are fenced by the claimed attempt in runtime checks and atomic SQLite updates; this protects persisted status and handoffs, not external effects from a still-running process.
+
+## Windows Job Object supervisor (development)
+
+An optional Windows helper in `scripts/windows/JobRunner.cs` is compiled with `scripts/windows/build-runner.ps1`. Set `OPENCODE_BOT_WINDOWS_JOB_RUNNER` to the absolute compiled executable path. The helper creates the child suspended, attaches it to a kill-on-close Job Object, resumes it, and enforces a native timeout independent of Bun timers. Invalid configured runner paths fail closed. The trusted `scripts/local-ci.ps1` builds and enables the helper for Windows tests.
+
+This is process-tree management, not an OS sandbox. Windows account privileges and accessible workspaces remain unchanged. External side effects cannot be undone, and intentionally escaped descendants are not guaranteed to be contained. The legacy `taskkill` fallback remains when the helper is not enabled; it is not sufficient evidence of reliable timeout enforcement. A separate least-privileged Windows account and scratch workspace remain required before deployment.

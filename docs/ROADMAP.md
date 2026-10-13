@@ -119,3 +119,12 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Five targeted regressions pass on Windows Bun 1.4.2, including direct stale-attempt DB writes, shutdown/retry overlap and a mutated executor argument. Typecheck and build pass.
 - The full Windows suite remains under investigation: candidate runs reported 23 pass / 2 skips / 2 failures, then 24 pass / 2 skips / 1 failure in existing inherited-pipe tests. An unchanged baseline at e55ac56 independently reproduced the immediate-retry timeout failure. This is a confirmed pre-existing Windows issue, not a green gate.
 - No Windows Job Object helper is included. Hard OS-enforced timeout for all Windows descendants and a dedicated low-privilege OS account remain open. The published SHA and Linux CI for this correction must be checked separately.
+
+## Development checkpoint - 13 October 2026 (Windows Job Object candidate)
+
+- Source base: `5d93ec2b4b447cd7f67090a4fface32f508507c0`, PR #1 draft. Isolated worktree `dev/ocb-win-job-run10-20261013`; unrelated historical `dist` edits remain unstaged.
+- Added a Windows-native process supervisor: suspended creation, kill-on-close Job Object assignment before resuming the child, bounded native wait, explicit opt-in and fail-closed runner-path validation. Build uses PowerShell `Add-Type` with a source-hash-keyed output filename; no new runtime dependencies.
+- Negative-effect smoke test confirmed parent and grandchild termination on a 900 ms timeout with no delayed file write. The Windows integration test requires timeout rejection and absence of late side effects. Two exploratory Windows full-suite executions before enabling the helper exposed the existing cancellation flakiness; no old tests were removed or weakened.
+- A complete trusted Windows local CI run with the helper configured passed **27 tests, 2 POSIX-only skips, 0 failures**, plus typecheck and build. This is local evidence against uncommitted candidate code, not hosted CI on a new SHA.
+- Remaining gates: independent read-only review, final verification, push and SHA-specific GitHub Linux CI, then separate least-privileged Windows OS account and scratch workspace validation. No merge or deployment authorized.
+- Verification integrity: the POSIX-only tree test retains its original `timed out` assertion; the Windows-specific regression requires the Job Object timeout marker, not a generic delayed Bun timeout. A fresh Windows `bun test` compiles its source-hash-keyed helper on demand rather than relying on an ignored prebuilt executable.

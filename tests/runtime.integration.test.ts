@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpenCodeExecutor } from "../src/runtime";
@@ -130,6 +131,42 @@ describe("real spawned worker cancellation", () => {
     });
     await expect(execute(bot, claimed, [], db)).rejects.toThrow("timed out");
     expect(existsSync(started)).toBe(true);
+    await assertNoLateSideEffect(started);
+  });
+  const windowsTest = process.platform === "win32" ? test : test.skip;
+  windowsTest("Windows Job Object enforces a deadline and stops inherited-pipe grandchildren", async () => {
+    const digest = createHash("sha256")
+      .update(readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs")))
+      .digest("hex").slice(0, 16);
+    const runner = join(process.cwd(), "dist", "ocb-job-runner-" + digest + ".exe");
+    // The committed verification contract includes a bare `bun test` check.
+    // Compile on demand so a fresh Windows clone does not silently depend
+    // on having run scripts/local-ci.ps1 first.
+    if (!existsSync(runner)) {
+      const built = Bun.spawnSync([
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        join(process.cwd(), "scripts", "windows", "build-runner.ps1")
+      ], { stdout: "pipe", stderr: "pipe" });
+      expect(built.exitCode).toBe(0);
+    }
+    expect(existsSync(runner)).toBe(true);
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Windows process tree test" });
+    const task = db.addTask({ botId: bot.id, prompt: "Long-running child", requiresApproval: false });
+    const claimed = db.claim()!;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "tree", started],
+      timeoutMs: 900,
+      windowsJobRunner: runner
+    });
+    const running = execute(bot, claimed, [], db);
+    pending.push(running);
+    await waitFor(started + ".grandchild");
+    // The supervisor owns the native deadline; Bun retains a later watchdog.
+    // Assert its specific timeout signal, plus no descendant side effects.
+    await expect(running).rejects.toThrow("Windows Job Object");
     await assertNoLateSideEffect(started);
   });
   const posixTest = process.platform === "win32" ? test.skip : test;

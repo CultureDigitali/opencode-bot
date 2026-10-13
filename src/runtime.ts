@@ -1,7 +1,7 @@
 import { Cron } from "croner";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { BotStore, type Bot, type BotTask } from "./store";
 
 export type MemoryEntry = { key: string; content: string };
@@ -93,7 +93,7 @@ export type OpenCodeCommand = (bot: Bot, task: BotTask, prompt: string, workspac
 
 // Command injection is used only for hermetic process integration tests.
 // Production uses the canonical OpenCode invocation and bounded timeout.
-export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number; nowMs?: () => number } = {}): TaskExecutor {
+export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number; nowMs?: () => number; windowsJobRunner?: string } = {}): TaskExecutor {
   if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 3_600_000)) {
     throw new Error("Test timeout override must be a finite positive integer <= 3600000");
   }
@@ -115,16 +115,25 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       openCodeExecutable(), "run", "--pure", "--format", "json", "--model", bot.model,
       "--agent", bot.agent, "--dir", workspace, prompt
     ];
-    // The injectable monotonic clock is only for deterministic integration tests.
-    const nowMs = options.nowMs ?? (() => performance.now());
-    const startedAt = nowMs();
-    const processHandle = Bun.spawn(args, {
-      cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-      detached: process.platform !== "win32"
-    });
     const configuredTimeout = Number(process.env.OPENCODE_BOT_TASK_TIMEOUT_MS || 900_000);
     const timeoutMs = options.timeoutMs ?? (Number.isFinite(configuredTimeout)
       ? Math.max(10_000, Math.min(3_600_000, configuredTimeout)) : 900_000);
+    // Opt-in native supervisor enforces deadlines with Windows Job Objects,
+    // independent of Bun's event loop. Configuration errors fail closed.
+    const windowsJobRunner = process.platform === "win32"
+      ? (options.windowsJobRunner ?? process.env.OPENCODE_BOT_WINDOWS_JOB_RUNNER)
+      : undefined;
+    if (windowsJobRunner && (!isAbsolute(windowsJobRunner) || !existsSync(windowsJobRunner))) {
+      throw new Error("OPENCODE_BOT_WINDOWS_JOB_RUNNER must name an existing absolute executable");
+    }
+    const launchArgs = windowsJobRunner ? [windowsJobRunner, String(timeoutMs), ...args] : args;
+    // The injectable monotonic clock is only for deterministic integration tests.
+    const nowMs = options.nowMs ?? (() => performance.now());
+    const startedAt = nowMs();
+    const processHandle = Bun.spawn(launchArgs, {
+      cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      detached: process.platform !== "win32"
+    });
     let termination: string | null = null;
     let killRequested = false;
     const abortPipes = new AbortController();
@@ -136,7 +145,9 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       killRequested = true;
       abortPipes.abort();
       signalTermination();
-      if (process.platform === "win32" && processHandle.pid) {
+      if (process.platform === "win32" && processHandle.pid && !windowsJobRunner) {
+        // Legacy fallback only. Killing the native helper closes the Job
+        // Object and terminates descendants without synchronous taskkill.
         // Kill the full process tree: Windows CLI shims can launch children.
         try {
           Bun.spawnSync(["taskkill", "/PID", String(processHandle.pid), "/T", "/F"], {
@@ -151,7 +162,10 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       }
       try { processHandle.kill("SIGKILL"); } catch { /* already exited */ }
     };
-    const timer = setTimeout(() => terminate("OpenCode task timed out"), timeoutMs);
+    // On Windows the Job Object supervisor owns the hard deadline. Keep a
+    // separate later watchdog for a stuck supervisor, not a race to kill it
+    // while it is still assigning a suspended child to its job.
+    const timer = setTimeout(() => terminate("OpenCode task timed out"), windowsJobRunner ? timeoutMs + 5_000 : timeoutMs);
     const cancelMonitor = setInterval(() => {
       const current = store.getTask(task.id);
       // A cancelled task can be retried before the next poll. The retry must
@@ -172,9 +186,11 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       // callbacks until the direct process exits. Never accept an overdue
       // response (or misclassify its empty output) merely because the timer
       // callback did not run. This cannot undo late subprocess side effects.
-      if (nowMs() - startedAt >= timeoutMs) throw new Error("OpenCode task timed out (completion exceeded deadline)");
+
       if (!completed) throw new Error("OpenCode worker terminated");
       const [stdout, stderr, exitCode] = completed;
+      if (windowsJobRunner && exitCode === 124 && stderr.includes("OCB_JOB_TIMEOUT")) throw new Error("OpenCode task timed out (Windows Job Object)");
+      if (nowMs() - startedAt >= timeoutMs) throw new Error("OpenCode task timed out (completion exceeded deadline)");
       if (exitCode !== 0) throw new Error("OpenCode exited with status " + exitCode + ": " + redact(stderr.slice(-1_000)));
       const result = extractAssistantText(stdout);
       if (!result) throw new Error("OpenCode returned no assistant text");
