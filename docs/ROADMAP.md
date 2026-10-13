@@ -136,3 +136,11 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Trusted Windows Bun 1.4.2 verification after these edits: **28 PASS, 2 POSIX-only SKIP, 0 FAIL**, with TypeScript typecheck and build passing. The targeted process integration suite also passed **6 tests, 2 POSIX-only skips**.
 - Parent/child process termination is not equivalent to OS-account sandboxing; the intentional detached-descendant test covers a Windows process created with `detached: true`, not every conceivable handle-inheritance or breakaway scenario. Privilege-separated account testing is still required.
 - The remote development branch is still at `5d93ec2b4b447cd7f67090a4fface32f508507c0`, with GitHub Linux CI green there only. Publishing the local native-helper candidate and its review follow-up, then verifying Linux CI on the new remote SHA, remains the highest open gate. Historical `dist` modifications remain protected and excluded.
+
+## Development checkpoint - 13 October 2026 (Windows supervisor published)
+
+- Published commits `82b9971` and `344c308` with a non-forced push to `feat/persistent-bot-runtime`. Remote SHA verified: `344c30802e79153bce8a385e86022928b2d1508d`.
+- GitHub-hosted Linux CI succeeded twice on this SHA: runs `38412910130` and `38412903036`. This is not evidence of Windows-specific Job Object execution.
+- Windows Bun 1.4.2 candidate verification: frozen-lockfile install, 28 PASS, 2 POSIX-only SKIP, 0 FAIL; typecheck and build PASS. A direct wrapper call to `scripts/local-ci.ps1` was blocked by the execution tool in this cycle; it was not independently run here.
+- Independent read-only OpenCode CLI Muse Spark 1.3 Contributor Free review of both commits: conditional PASS; no confirmed high-severity findings. Medium risks require follow-up: cached native EXE integrity, suspended child before assignment if supervisor is killed, broad inheritable handles, and no hosted Windows CI coverage.
+- Pre-existing `dist/index.js` and `dist/index.d.ts` edits remain protected. Windows Job Objects are not an OS sandbox. Next: address medium findings and validate a dedicated least-privileged account with scratch workspace before any merge, release, or deployment.
