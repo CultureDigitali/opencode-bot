@@ -154,7 +154,7 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
             stdout: "ignore", stderr: "ignore"
           });
         } catch { /* fallback below */ }
-      } else if (processHandle.pid) {
+      } else if (process.platform !== "win32" && processHandle.pid) {
         // The POSIX child owns a dedicated process group (detached at spawn).
         // Terminate ordinary descendants sharing its output pipes as well.
         const ownedGroup = 0 - processHandle.pid;

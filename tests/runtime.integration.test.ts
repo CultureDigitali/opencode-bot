@@ -60,6 +60,23 @@ async function assertNoLateSideEffect(started: string): Promise<void> {
   await Bun.sleep(Math.max(0, readyAt + 2300 - Date.now()));
   expect(existsSync(started + ".late")).toBe(false);
 }
+
+function windowsRunnerPath(): string {
+  const digest = createHash("sha256")
+    .update(readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs")))
+    .digest("hex").slice(0, 16);
+  const runner = join(process.cwd(), "dist", "ocb-job-runner-" + digest + ".exe");
+  // Either Windows test must also pass when run in isolation on a fresh clone.
+  if (!existsSync(runner)) {
+    const built = Bun.spawnSync([
+      "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      join(process.cwd(), "scripts", "windows", "build-runner.ps1")
+    ], { stdout: "pipe", stderr: "pipe" });
+    expect(built.exitCode).toBe(0);
+  }
+  expect(existsSync(runner)).toBe(true);
+  return runner;
+}
 afterEach(async () => {
   await Promise.allSettled(pending.splice(0));
   for (const db of stores.splice(0)) db.close();
@@ -135,21 +152,7 @@ describe("real spawned worker cancellation", () => {
   });
   const windowsTest = process.platform === "win32" ? test : test.skip;
   windowsTest("Windows Job Object enforces a deadline and stops inherited-pipe grandchildren", async () => {
-    const digest = createHash("sha256")
-      .update(readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs")))
-      .digest("hex").slice(0, 16);
-    const runner = join(process.cwd(), "dist", "ocb-job-runner-" + digest + ".exe");
-    // The committed verification contract includes a bare `bun test` check.
-    // Compile on demand so a fresh Windows clone does not silently depend
-    // on having run scripts/local-ci.ps1 first.
-    if (!existsSync(runner)) {
-      const built = Bun.spawnSync([
-        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        join(process.cwd(), "scripts", "windows", "build-runner.ps1")
-      ], { stdout: "pipe", stderr: "pipe" });
-      expect(built.exitCode).toBe(0);
-    }
-    expect(existsSync(runner)).toBe(true);
+    const runner = windowsRunnerPath();
     const { script, started } = fixture();
     const db = new BotStore(":memory:");
     stores.push(db);
@@ -166,6 +169,25 @@ describe("real spawned worker cancellation", () => {
     await waitFor(started + ".grandchild");
     // The supervisor owns the native deadline; Bun retains a later watchdog.
     // Assert its specific timeout signal, plus no descendant side effects.
+    await expect(running).rejects.toThrow("Windows Job Object");
+    await assertNoLateSideEffect(started);
+  });
+  windowsTest("Windows Job Object contains detached grandchildren without late side effects", async () => {
+    const runner = windowsRunnerPath();
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Windows detached descendant test" });
+    const task = db.addTask({ botId: bot.id, prompt: "Stop detached child", requiresApproval: false });
+    const claimed = db.claim()!;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "escaped", started],
+      timeoutMs: 900,
+      windowsJobRunner: runner
+    });
+    const running = execute(bot, claimed, [], db);
+    pending.push(running);
+    await waitFor(started + ".grandchild");
     await expect(running).rejects.toThrow("Windows Job Object");
     await assertNoLateSideEffect(started);
   });
