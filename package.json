@@ -1,7 +1,7 @@
 {
-  "name": "opencode-cron",
-  "version": "0.0.7",
-  "description": "A cron job scheduler for OpenCode sessions that triggers messages at scheduled intervals",
+  "name": "opencode-bot",
+  "version": "0.1.0",
+  "description": "Persistent local-first AI teammates, scheduled tasks and approvals powered by OpenCode",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,9 +16,14 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun build ./index.ts --outdir ./dist --target bun && bun run build:types",
-    "build:types": "tsc --emitDeclarationOnly",
-    "start": "bun run build",
+    "build": "bun run build:plugin && bun run build:daemon && bun run build:types",
+    "build:plugin": "bun build ./index.ts --outdir ./dist --target bun",
+    "build:daemon": "bun build ./src/server.ts --outdir ./dist --target bun && bun run scripts/copy-assets.ts",
+    "build:types": "tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "dev": "bun run src/server.ts",
+    "start": "bun run dist/server.js",
     "prepublishOnly": "bun run build"
   },
   "devDependencies": {
@@ -38,16 +43,20 @@
     "opencode",
     "plugin",
     "mailbox",
+    "cron",
+    "agents",
+    "automation",
+    "dashboard",
     "messaging"
   ],
-  "author": "OpenCode Community",
+  "author": "Culture Digitali (fork based on richardanaya/opencode-cron)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/richardanaya/opencode-cron.git"
+    "url": "git+https://github.com/CultureDigitali/opencode-bot.git"
   },
-  "homepage": "https://github.com/richardanaya/opencode-cron#readme",
+  "homepage": "https://github.com/CultureDigitali/opencode-bot#readme",
   "bugs": {
-    "url": "https://github.com/richardanaya/opencode-cron/issues"
+    "url": "https://github.com/CultureDigitali/opencode-bot/issues"
   }
 }
