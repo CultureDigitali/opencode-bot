@@ -26,3 +26,5 @@ Security findings can be shared privately with the repository maintainers at Cul
 - On Windows, Bun 1.4.2 can delay timeout callbacks while a subprocess owns inherited-pipe descendants. An observed 900 ms limit was missed, and the old executor reported an empty response after about three seconds. A monotonic completion-time check now reports this **overdue completion** as a timeout rather than accepting or misclassifying it. This is only fail-closed result classification: it does **not** ensure timely cancellation, process-tree termination or prevention of late side effects. Do not rely on Windows timeout enforcement for arbitrary descendant trees. Use a restricted OS identity until isolation and cross-platform tests are complete.
 - HTTP dashboard supports token authentication and same-origin checks; do not expose it directly to the public internet.
 - Cron schedules persist in SQLite, but they trigger only while the daemon is running.
+
+- Stale executor results after cancel/retry are fenced by the claimed attempt in runtime checks and atomic SQLite updates; this protects persisted status and handoffs, not external effects from a still-running process.

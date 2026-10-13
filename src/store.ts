@@ -217,9 +217,9 @@ export class BotStore {
     return claimOne();
   }
 
-  complete(id: string, answer: string): BotTask {
+  complete(id: string, answer: string, expectedAttempt?: number): BotTask {
     const result = answer.slice(0, MAX_TEXT);
-    const updated = this.db.query("UPDATE bot_tasks SET status='completed', result=?, error=NULL, updated_at=? WHERE id=? AND status='running'").run(result, iso(), id);
+    const updated = this.db.query("UPDATE bot_tasks SET status='completed', result=?, error=NULL, updated_at=? WHERE id=? AND status='running' AND attempts=COALESCE(?, attempts)").run(result, iso(), id, expectedAttempt ?? null);
     if (!updated.changes) throw new Error("Task is no longer running");
     this.event(id, "task_completed", "Result persisted");
     const task = this.getTask(id)!;
@@ -238,8 +238,8 @@ export class BotStore {
     return task;
   }
 
-  fail(id: string, message: string): BotTask {
-    const updated = this.db.query("UPDATE bot_tasks SET status='failed', error=?, updated_at=? WHERE id=? AND status='running'").run(message.slice(0, 4_000), iso(), id);
+  fail(id: string, message: string, expectedAttempt?: number): BotTask {
+    const updated = this.db.query("UPDATE bot_tasks SET status='failed', error=?, updated_at=? WHERE id=? AND status='running' AND attempts=COALESCE(?, attempts)").run(message.slice(0, 4_000), iso(), id, expectedAttempt ?? null);
     if (!updated.changes) throw new Error("Task is no longer running");
     this.event(id, "task_failed", message);
     return this.getTask(id)!;

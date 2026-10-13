@@ -201,6 +201,7 @@ export class BotRuntime {
   private stopped = false;
   private leaseActive = false;
   private activeTaskId: string | null = null;
+  private activeTaskAttempt: number | null = null;
   private readonly leaseOwner = randomUUID();
 
   constructor(readonly store: BotStore, readonly executor: TaskExecutor = executeOpenCode) {}
@@ -232,8 +233,9 @@ export class BotRuntime {
     this.heartbeat = undefined;
     for (const cron of this.cronJobs.values()) cron.stop();
     this.cronJobs.clear();
-    if (this.activeTaskId && this.store.getTask(this.activeTaskId)?.status === "running") {
-      this.store.cancel(this.activeTaskId);
+    const active = this.activeTaskId ? this.store.getTask(this.activeTaskId) : null;
+    if (active?.status === "running" && active.attempts === this.activeTaskAttempt) {
+      this.store.cancel(active.id);
     }
     if (!this.busy) this.releaseLease();
   }
@@ -274,19 +276,26 @@ export class BotRuntime {
     const task = this.store.claim();
     if (!task) return;
     this.busy = true;
+    const claimedAttempt = task.attempts;
     this.activeTaskId = task.id;
+    this.activeTaskAttempt = claimedAttempt;
     try {
       const bot = this.store.getBot(task.bot_id);
       if (!bot) throw new Error("Bot no longer exists");
       const answer = await this.executor(bot, task, this.store.memory(bot.id), this.store);
-      if (this.store.getTask(task.id)?.status === "running") this.store.complete(task.id, answer);
+      const current = this.store.getTask(task.id);
+      if (current?.status === "running" && current.attempts === claimedAttempt) {
+        this.store.complete(task.id, answer, claimedAttempt);
+      }
     } catch (error) {
-      if (this.store.getTask(task.id)?.status === "running") {
-        this.store.fail(task.id, redact(error instanceof Error ? error.message : String(error)));
+      const current = this.store.getTask(task.id);
+      if (current?.status === "running" && current.attempts === claimedAttempt) {
+        this.store.fail(task.id, redact(error instanceof Error ? error.message : String(error)), claimedAttempt);
       }
     } finally {
       this.busy = false;
       this.activeTaskId = null;
+      this.activeTaskAttempt = null;
       if (this.stopped) this.releaseLease();
       if (!this.stopped) queueMicrotask(() => void this.tick());
     }
