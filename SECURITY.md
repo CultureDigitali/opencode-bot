@@ -5,6 +5,7 @@ OpenCode Bot runs an AI coding tool. **Bot-generated commands execute with the O
 ## Safe deployment assumptions
 
 1. Keep the HTTP listener on **127.0.0.1** by default.
+   When no bearer token is configured, the API rejects requests addressed to non-loopback hostnames (DNS-rebinding protection). This is defense in depth, not a replacement for OS isolation.
 2. For trusted LAN or VPN access, configure a long random `OPENCODE_BOT_TOKEN`, firewall restrictions and ideally an HTTPS reverse proxy or encrypted VPN.
 3. Start the daemon under an OS account dedicated to this application with access only to explicitly permitted workspaces. Do not attach administrator rights or the operator's main home directory.
 4. Run `opencode run` with the least permissive agent profile possible. `--pure` suppresses third-party plugins but is **not** an OS sandbox.

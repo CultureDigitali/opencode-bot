@@ -149,6 +149,21 @@ describe("cron and worker", () => {
 });
 
 describe("API security", () => {
+  test("tokenless loopback API rejects DNS-rebinding hostnames", async () => {
+    const db = store();
+    const handle = createHandler(db, new BotRuntime(db, async () => "done"));
+    for (const origin of ["http://attacker.invalid:4271", undefined]) {
+      const request = new Request("http://attacker.invalid:4271/api/bots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+        body: JSON.stringify({ name: "Unauthorized" })
+      });
+      expect((await handle(request)).status).toBe(403);
+    }
+    expect(db.listBots()).toHaveLength(0);
+    expect((await handle(new Request("http://127.0.0.1:4271/api/bots"))).status).toBe(200);
+  });
+
   test("rejects oversized request body before JSON parsing", async () => {
     const db = store();
     const handle = createHandler(db, new BotRuntime(db, async () => "done"));

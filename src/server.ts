@@ -70,6 +70,12 @@ export function createHandler(store: BotStore, runtime: BotRuntime, token = "") 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = url.pathname;
+    // When no bearer token is configured, only loopback hostnames are trusted.
+    // Binding to 127.0.0.1 alone does not prevent browser DNS-rebinding attacks:
+    // a hostile hostname can resolve to loopback and present a matching Origin.
+    if (!token && !isLocal(url.hostname)) {
+      return json({ error: "Loopback hostname required without a bearer token" }, 403);
+    }
     if (request.method === "GET" && route === "/health") {
       return json({ status: "ok", service: "opencode-bot", version: "0.1.0" });
     }

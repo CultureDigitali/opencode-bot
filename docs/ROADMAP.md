@@ -17,6 +17,7 @@ Base: [richardanaya/opencode-cron](https://github.com/richardanaya/opencode-cron
 | Responsive dashboard | Implemented | Build; manual browser QA pending |
 | GitHub hosted CI | Workflow prepared | Must verify pushed SHA |
 | Windows CI fallback | Script prepared | GitHub self-hosted runner not registered |
+| Tokenless loopback DNS-rebinding protection | Implemented | Regression reproduces prior 201 response for hostile hostname, then requires 403; normal 127.0.0.1 remains accessible |
 
 ## M2 — Production reliability
 
@@ -46,3 +47,12 @@ Base: [richardanaya/opencode-cron](https://github.com/richardanaya/opencode-cron
 ## At every authorized improvement run
 
 Inspect branch, HEAD, protected changes and verification contract. Choose the highest-impact confirmed gap. Make one scoped change, test, review (independent OpenCode agent when available), commit, push, verify the remote SHA and update this roadmap. Never force-push or auto-merge. On hosted Actions quota exhaustion, execute the equivalent local checks using the trusted Windows PC, clearly noting whether GitHub self-hosted CI evidence exists.
+
+## Development checkpoint — 13 October 2026
+
+- Base branch: `feat/persistent-bot-runtime`; initial HEAD `d2cc22e1b1f51c1e0c2c94f32deb8fb949a74a39`; draft PR #1 into `master`.
+- Baseline: Windows Bun 1.4.2, 14/14 tests, TypeScript typecheck and build PASS. GitHub-hosted run 38331667064 reported success for the initial SHA.
+- Prioritized defect: an unauthenticated, loopback-bound API accepted a JSON request addressed to an arbitrary attacker-controlled hostname. This could defeat browser same-origin checks through DNS rebinding.
+- Change: reject non-loopback request URL hostnames when no bearer token is configured, with negative and positive API regressions. Token-protected LAN operation is unaffected.
+- Protected pre-existing local modifications: `dist/index.js` and `dist/index.d.ts` generated-file changes must not be staged or reset.
+- Next after this change: independently review the host validation and add real subprocess cancellation/retry regression coverage, then an isolated-account OpenCode integration harness.
