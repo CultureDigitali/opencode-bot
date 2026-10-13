@@ -22,6 +22,23 @@ if (mode === "slow") {
   await Bun.sleep(1800);
   writeFileSync(started + ".late", "unsafe late side effect");
   console.log(JSON.stringify({ type: "text", part: { text: "stale attempt" } }));
+} else if (mode === "tree") {
+  Bun.spawn([process.execPath, import.meta.path, "grandchild", started], {
+    stdin: "ignore", stdout: "inherit", stderr: "inherit"
+  });
+  writeFileSync(started, "ready");
+  await Bun.sleep(3000);
+} else if (mode === "escaped") {
+  // POSIX process-group escape: the grandchild still inherits both pipes.
+  Bun.spawn([process.execPath, import.meta.path, "grandchild", started], {
+    detached: true, stdin: "ignore", stdout: "inherit", stderr: "inherit"
+  });
+  writeFileSync(started, "ready");
+  await Bun.sleep(3000);
+} else if (mode === "grandchild") {
+  writeFileSync(started + ".grandchild", "ready");
+  await Bun.sleep(1800);
+  writeFileSync(started + ".late", "surviving grandchild side effect");
 } else {
   console.log(JSON.stringify({ type: "text", part: { text: "fresh attempt" } }));
 }
@@ -98,6 +115,44 @@ describe("real spawned worker cancellation", () => {
     await expect(execute(bot, claimed, [], db)).rejects.toThrow("timed out");
     expect(existsSync(started)).toBe(true);
     await assertNoLateSideEffect(started);
+  });
+  const posixTest = process.platform === "win32" ? test.skip : test;
+  posixTest("POSIX timeout stops ordinary inherited-pipe grandchildren", async () => {
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "POSIX tree test" });
+    const task = db.addTask({ botId: bot.id, prompt: "Stall", requiresApproval: false });
+    const claimed = db.claim()!;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "tree", started], timeoutMs: 900
+    });
+    const running = execute(bot, claimed, [], db);
+    pending.push(running);
+    await waitFor(started + ".grandchild");
+    await expect(running).rejects.toThrow("timed out");
+    await assertNoLateSideEffect(started);
+  });
+  posixTest("escaped POSIX descendant holding pipes cannot block worker completion", async () => {
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Escaped child test" });
+    const task = db.addTask({ botId: bot.id, prompt: "Stall", requiresApproval: false });
+    const claimed = db.claim()!;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "escaped", started], timeoutMs: 900
+    });
+    const running = execute(bot, claimed, [], db);
+    pending.push(running);
+    await waitFor(started + ".grandchild");
+    await expect(Promise.race([
+      running,
+      Bun.sleep(1600).then(() => { throw new Error("Escaped pipe holder blocked worker slot"); })
+    ])).rejects.toThrow("timed out");
+    // Process-group signals are not an OS sandbox. The intentionally escaped
+    // fixture remains alive briefly, then exits before test teardown.
+    await waitFor(started + ".late", 3000);
   });
   test("test harness cannot disable its own timeout with invalid values", () => {
     for (const timeoutMs of [0, -1, Infinity, NaN, 3_600_001]) {

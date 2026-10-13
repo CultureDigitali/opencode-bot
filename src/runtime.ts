@@ -13,11 +13,14 @@ function redact(value: string): string {
     .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]");
 }
 
-async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number, onOverflow: () => void): Promise<string> {
+async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number, onOverflow: () => void, abortSignal?: AbortSignal): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let size = 0;
   let text = "";
+  const abortRead = () => { void reader.cancel("Task terminated").catch(() => { /* stream already closed */ }); };
+  if (abortSignal?.aborted) abortRead();
+  else abortSignal?.addEventListener("abort", abortRead, { once: true });
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -33,6 +36,7 @@ async function readBounded(stream: ReadableStream<Uint8Array>, maxBytes: number,
     text += decoder.decode();
     return text;
   } finally {
+    abortSignal?.removeEventListener("abort", abortRead);
     reader.releaseLock();
   }
 }
@@ -112,17 +116,23 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       "--agent", bot.agent, "--dir", workspace, prompt
     ];
     const processHandle = Bun.spawn(args, {
-      cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe"
+      cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      detached: process.platform !== "win32"
     });
     const configuredTimeout = Number(process.env.OPENCODE_BOT_TASK_TIMEOUT_MS || 900_000);
     const timeoutMs = options.timeoutMs ?? (Number.isFinite(configuredTimeout)
       ? Math.max(10_000, Math.min(3_600_000, configuredTimeout)) : 900_000);
     let termination: string | null = null;
     let killRequested = false;
+    const abortPipes = new AbortController();
+    let signalTermination = () => {};
+    const terminationSignal = new Promise<null>((resolve) => { signalTermination = () => resolve(null); });
     const terminate = (reason: string) => {
       termination ??= reason;
       if (killRequested) return;
       killRequested = true;
+      abortPipes.abort();
+      signalTermination();
       if (process.platform === "win32" && processHandle.pid) {
         // Kill the full process tree: Windows CLI shims can launch children.
         try {
@@ -130,6 +140,11 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
             stdout: "ignore", stderr: "ignore"
           });
         } catch { /* fallback below */ }
+      } else if (processHandle.pid) {
+        // The POSIX child owns a dedicated process group (detached at spawn).
+        // Terminate ordinary descendants sharing its output pipes as well.
+        const ownedGroup = 0 - processHandle.pid;
+        try { process.kill(ownedGroup, "SIGKILL"); } catch { /* fallback below */ }
       }
       try { processHandle.kill("SIGKILL"); } catch { /* already exited */ }
     };
@@ -142,12 +157,16 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
         terminate("Task cancelled or superseded by retry");
       }
     }, 500);
-    const stdoutResult = readBounded(processHandle.stdout as ReadableStream<Uint8Array>, 512_000, () => terminate("Output limit exceeded"));
-    const stderrResult = readBounded(processHandle.stderr as ReadableStream<Uint8Array>, 64_000, () => terminate("Error output limit exceeded"));
+    const stdoutResult = readBounded(processHandle.stdout as ReadableStream<Uint8Array>, 512_000, () => terminate("Output limit exceeded"), abortPipes.signal);
+    const stderrResult = readBounded(processHandle.stderr as ReadableStream<Uint8Array>, 64_000, () => terminate("Error output limit exceeded"), abortPipes.signal);
     const exitResult = processHandle.exited;
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([stdoutResult, stderrResult, exitResult]);
+      // A helper can escape the child process group and retain inherited pipe
+      // handles. Do not let such a helper keep the worker slot busy forever.
+      const completed = await Promise.race([Promise.all([stdoutResult, stderrResult, exitResult]), terminationSignal]);
       if (termination) throw new Error(termination);
+      if (!completed) throw new Error("OpenCode worker terminated");
+      const [stdout, stderr, exitCode] = completed;
       if (exitCode !== 0) throw new Error("OpenCode exited with status " + exitCode + ": " + redact(stderr.slice(-1_000)));
       const result = extractAssistantText(stdout);
       if (!result) throw new Error("OpenCode returned no assistant text");
@@ -155,8 +174,11 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
     } finally {
       clearTimeout(timer);
       clearInterval(cancelMonitor);
-      // Do not release the worker slot while its process or pipe readers remain active.
-      await Promise.allSettled([stdoutResult, stderrResult, exitResult]);
+      // Cancellation closes our pipe readers. A different POSIX session can
+      // still retain child handles; bounded cleanup prevents slot starvation.
+      const settled = Promise.allSettled([stdoutResult, stderrResult, exitResult]);
+      if (termination) await Promise.race([settled, Bun.sleep(500)]);
+      else await settled;
     }
   };
 }

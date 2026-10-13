@@ -19,6 +19,9 @@ Base: [richardanaya/opencode-cron](https://github.com/richardanaya/opencode-cron
 | Windows CI fallback | Script prepared | GitHub self-hosted runner not registered |
 | Tokenless loopback DNS-rebinding protection | Implemented | Regression reproduces prior 201 response for hostile hostname, then requires 403; normal 127.0.0.1 remains accessible |
 | Loopback Host authority consistency | Implemented | Real Bun HTTP and forged-Host regression checks; token-protected LAN requests retained |
+| POSIX process-group cleanup | Implemented for ordinary descendants | Linux inherited-pipe grandchild regression failed before fix, passed after; OS sandbox still pending |
+| POSIX escaped pipe-holder slot recovery | Implemented (not a sandbox) | Separate-session grandchild regression verifies timeout settles while child remains alive |
+| Windows inherited-pipe descendants | Known gap | Windows Bun 1.4.2 exploratory probe missed 900 ms timeout and returned empty response after ~3.1 seconds; root cause pending |
 
 ## M2 — Production reliability
 
@@ -75,3 +78,18 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Added real Bun-spawn process regression tests for immediate retry, cancellation, timeout, and invalid test timeout overrides. A negative control with the prior cancellation condition failed, whereas the fixed implementation passed. The tests wait beyond the fake child's scheduled delayed file write to detect surviving processes.
 - Independent read-only OpenCode Muse Spark 1.3 review identified overly weak rejection/timing assertions, now corrected. Its POSIX process-tree concern remains open: direct-child SIGKILL does not prove grandchildren are gone on Linux, and the current Windows integration tests are not proof of POSIX process-group safety.
 - The next production-safety gate is POSIX process-group cleanup with Linux subprocess-tree integration verification, followed by isolated-account worker execution. GitHub publication and CI on the exact remote SHA must be verified separately before declaring release readiness.
+
+## Development checkpoint - 13 October 2026 (Linux process-tree verification)
+
+- Recovered the unpublished 3-commit sequence ending at `0bda10d` using the trusted Windows workspace. Original `feat/persistent-bot-runtime` remained at `935c6fc` with its pre-existing historical `dist` edits untouched; remote remains at `d2cc22e` pending authorized non-forced publication.
+- Independently reviewed `0bda10d` with OpenCode CLI Muse Spark 1.3 Contributor Free in plan/read-only mode. The review identified an inherited-output-pipe hang risk when POSIX descendants survive direct-child termination, plus a residual cancellation polling delay.
+- Created a clean verification worktree and installed checksum-verified Bun 1.4.2 in Ubuntu 24.04 WSL. Added a regression with a grandchild inheriting stdout/stderr: **negative control failed** before the POSIX fix because the grandchild wrote a late side-effect file; after detached process-group creation and group termination, the targeted test passed.
+- Existing Windows tests remained green (20 PASS, 1 POSIX-only skip); Ubuntu tests passed (21 PASS). Final typecheck/build, independent review of the final diff, commit publication and SHA-specific hosted CI are separately gated.
+- Remaining security boundary: a child that deliberately starts another process group can evade group termination. Full sandboxing and immediate operator-triggered abort remain M2 work; do not claim deployment safety.
+
+## Development checkpoint - 13 October 2026 (review reconciliation)
+
+- Independent OpenCode CLI Muse Spark 1.3 Contributor Free reviewer reproduced the code paths in read-only mode and identified an escaped descendant retaining stdout/stderr handles as a worker-slot starvation risk, an unverified process-group identity hypothesis, and missing Windows tree coverage.
+- Added abortable pipe readers and a bounded 500 ms post-cancellation drain. Linux regression proves a deliberately escaped detached grandchild does not indefinitely stall the worker response, while documenting that it can still perform side effects. Ordinary group descendants remain killable.
+- Exploratory Windows version of the tree test **failed** twice: with a 900 ms requested timeout, Bun 1.4.2 returned `OpenCode returned no assistant text` after about 3.1 seconds. This is a newly observed limitation, not a passing check. Kept the POSIX-only regression scoped to its verified platform and recorded the Windows gap in `SECURITY.md`.
+- The release remains blocked on privileged worker isolation, Windows descendant timeout investigation and SHA-bound publishing/CI. Do not treat these tests as production-sandbox evidence.
