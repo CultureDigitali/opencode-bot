@@ -93,7 +93,7 @@ export type OpenCodeCommand = (bot: Bot, task: BotTask, prompt: string, workspac
 
 // Command injection is used only for hermetic process integration tests.
 // Production uses the canonical OpenCode invocation and bounded timeout.
-export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number } = {}): TaskExecutor {
+export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number; nowMs?: () => number } = {}): TaskExecutor {
   if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 3_600_000)) {
     throw new Error("Test timeout override must be a finite positive integer <= 3600000");
   }
@@ -115,6 +115,9 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       openCodeExecutable(), "run", "--pure", "--format", "json", "--model", bot.model,
       "--agent", bot.agent, "--dir", workspace, prompt
     ];
+    // The injectable monotonic clock is only for deterministic integration tests.
+    const nowMs = options.nowMs ?? (() => performance.now());
+    const startedAt = nowMs();
     const processHandle = Bun.spawn(args, {
       cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe",
       detached: process.platform !== "win32"
@@ -165,6 +168,11 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
       // handles. Do not let such a helper keep the worker slot busy forever.
       const completed = await Promise.race([Promise.all([stdoutResult, stderrResult, exitResult]), terminationSignal]);
       if (termination) throw new Error(termination);
+      // On Windows, inherited descendant pipe handles can starve Bun's timer
+      // callbacks until the direct process exits. Never accept an overdue
+      // response (or misclassify its empty output) merely because the timer
+      // callback did not run. This cannot undo late subprocess side effects.
+      if (nowMs() - startedAt >= timeoutMs) throw new Error("OpenCode task timed out (completion exceeded deadline)");
       if (!completed) throw new Error("OpenCode worker terminated");
       const [stdout, stderr, exitCode] = completed;
       if (exitCode !== 0) throw new Error("OpenCode exited with status " + exitCode + ": " + redact(stderr.slice(-1_000)));

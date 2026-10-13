@@ -66,6 +66,22 @@ afterEach(async () => {
 });
 
 describe("real spawned worker cancellation", () => {
+  test("overdue completed result is rejected even when a deadline callback never fires", async () => {
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Late-result deadline test" });
+    const task = db.addTask({ botId: bot.id, prompt: "Classify overdue process completion", requiresApproval: false });
+    const claimed = db.claim()!;
+    let clockReads = 0;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "quick", started], timeoutMs: 900,
+      nowMs: () => (clockReads++ === 0 ? 0 : 901)
+    });
+    await expect(execute(bot, claimed, [], db)).rejects.toThrow("timed out");
+    expect(clockReads).toBe(2);
+  });
+
   test("immediate retry does not hide the cancellation of the old process", async () => {
     const { script, started } = fixture();
     const db = new BotStore(":memory:");
