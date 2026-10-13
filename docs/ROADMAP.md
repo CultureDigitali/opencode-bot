@@ -66,3 +66,12 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Current Windows Bun 1.4.2 tests: 17 passing. Final SHA-bound typecheck/build, published SHA and hosted CI require separate verification before declaring delivery complete.
 - Protected historical `dist/index.js` and `dist/index.d.ts` local modifications must remain unstaged. The build workflow uses backed-up copies and verifies restoration byte-for-byte.
 - Next priority: subprocess cancellation/retry integration tests, then isolated-account OpenCode worker harness.
+
+## Development checkpoint - 13 October 2026 (spawned-process cancellation and retry)
+
+- Confirmed trusted Windows local branch `feat/persistent-bot-runtime` at `935c6fc` before this cycle, two commits ahead of remote `d2cc22e`; PR #1 remains draft. An ordinary non-forced push was refused by the tool security checks; do not interpret earlier GitHub CI as covering these unpushed commits.
+- Isolated all implementation and build work in a separate Git worktree so the operator's pre-existing historical `dist/index.js` and `dist/index.d.ts` changes remain protected.
+- Fixed a cancellation/retry race: an immediate retry could reset the task status before the subprocess cancellation poll, letting the superseded OpenCode process continue running. The monitor now checks status AND claimed attempt number. Termination requests are idempotent.
+- Added real Bun-spawn process regression tests for immediate retry, cancellation, timeout, and invalid test timeout overrides. A negative control with the prior cancellation condition failed, whereas the fixed implementation passed. The tests wait beyond the fake child's scheduled delayed file write to detect surviving processes.
+- Independent read-only OpenCode Muse Spark 1.3 review identified overly weak rejection/timing assertions, now corrected. Its POSIX process-tree concern remains open: direct-child SIGKILL does not prove grandchildren are gone on Linux, and the current Windows integration tests are not proof of POSIX process-group safety.
+- The next production-safety gate is POSIX process-group cleanup with Linux subprocess-tree integration verification, followed by isolated-account worker execution. GitHub publication and CI on the exact remote SHA must be verified separately before declaring release readiness.

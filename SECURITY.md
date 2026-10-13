@@ -22,5 +22,6 @@ Security findings can be shared privately with the repository maintainers at Cul
 
 - There is no separate OS sandbox, multi-user RBAC, encrypted credential vault or independent permission enforcement within the worker.
 - Task timeout and cancellation terminate the OpenCode subprocess tree where supported, but external side effects performed before cancellation cannot be rolled back.
+- On POSIX, process-group fencing for descendants is not yet verified; cancellation currently sends SIGKILL to the direct subprocess, so child helpers may outlive it. Run only under a restricted OS identity until isolation and integration gates are complete.
 - HTTP dashboard supports token authentication and same-origin checks; do not expose it directly to the public internet.
 - Cron schedules persist in SQLite, but they trigger only while the daemon is running.

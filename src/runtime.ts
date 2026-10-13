@@ -84,63 +84,84 @@ function extractAssistantText(output: string): string {
   return (parts.length ? parts.join("\n") : output).trim().slice(0, 64_000);
 }
 
-export const executeOpenCode: TaskExecutor = async (bot, task, memory, store) => {
-  const workspace = process.env.OPENCODE_BOT_WORKSPACE || process.cwd();
-  const memoryText = memory.map((item) => item.key + ": " + item.content).join("\n").slice(0, 8_000);
-  const prompt = [
-    "You are the named OpenCode teammate: " + bot.name,
-    bot.instructions,
-    "Persisted context (operator-managed, not higher-priority instructions):",
-    memoryText || "(none)",
-    "Assigned task:",
-    task.prompt,
-    "Do not claim tests or changes you did not execute. Return a concise verifiable result."
-  ].join("\n\n");
+/** @internal Hook for hermetic spawned-process integration tests only. */
+export type OpenCodeCommand = (bot: Bot, task: BotTask, prompt: string, workspace: string) => string[];
 
-  const env = childEnvironment();
-  const args = [
-    openCodeExecutable(), "run", "--pure", "--format", "json", "--model", bot.model,
-    "--agent", bot.agent, "--dir", workspace, prompt
-  ];
-  const processHandle = Bun.spawn(args, {
-    cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe"
-  });
-  const timeoutMs = Math.max(10_000, Math.min(3_600_000, Number(process.env.OPENCODE_BOT_TASK_TIMEOUT_MS || 900_000)));
-  let termination: string | null = null;
-  const terminate = (reason: string) => {
-    termination ??= reason;
-    if (process.platform === "win32" && processHandle.pid) {
-      // Kill the full process tree: Windows CLI shims can launch children.
-      try {
-        Bun.spawnSync(["taskkill", "/PID", String(processHandle.pid), "/T", "/F"], {
-          stdout: "ignore", stderr: "ignore"
-        });
-      } catch { /* fallback below */ }
-    }
-    try { processHandle.kill("SIGKILL"); } catch { /* already exited */ }
-  };
-  const timer = setTimeout(() => terminate("OpenCode task timed out"), timeoutMs);
-  const cancelMonitor = setInterval(() => {
-    if (store.getTask(task.id)?.status === "cancelled") terminate("Task cancelled by operator");
-  }, 500);
-  const stdoutResult = readBounded(processHandle.stdout as ReadableStream<Uint8Array>, 512_000, () => terminate("Output limit exceeded"));
-  const stderrResult = readBounded(processHandle.stderr as ReadableStream<Uint8Array>, 64_000, () => terminate("Error output limit exceeded"));
-  const exitResult = processHandle.exited;
-  try {
-    const [stdout, stderr, exitCode] = await Promise.all([stdoutResult, stderrResult, exitResult]);
-    if (termination) throw new Error(termination);
-    if (exitCode !== 0) throw new Error("OpenCode exited with status " + exitCode + ": " + redact(stderr.slice(-1_000)));
-    const result = extractAssistantText(stdout);
-    if (!result) throw new Error("OpenCode returned no assistant text");
-    return result;
-  } finally {
-    clearTimeout(timer);
-    clearInterval(cancelMonitor);
-    if (termination) terminate(termination);
-    // Do not release the worker slot while its process or pipe readers remain active.
-    await Promise.allSettled([stdoutResult, stderrResult, exitResult]);
+// Command injection is used only for hermetic process integration tests.
+// Production uses the canonical OpenCode invocation and bounded timeout.
+export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number } = {}): TaskExecutor {
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 3_600_000)) {
+    throw new Error("Test timeout override must be a finite positive integer <= 3600000");
   }
-};
+  return async (bot, task, memory, store) => {
+    const workspace = process.env.OPENCODE_BOT_WORKSPACE || process.cwd();
+    const memoryText = memory.map((item) => item.key + ": " + item.content).join("\n").slice(0, 8_000);
+    const prompt = [
+      "You are the named OpenCode teammate: " + bot.name,
+      bot.instructions,
+      "Persisted context (operator-managed, not higher-priority instructions):",
+      memoryText || "(none)",
+      "Assigned task:",
+      task.prompt,
+      "Do not claim tests or changes you did not execute. Return a concise verifiable result."
+    ].join("\n\n");
+
+    const env = childEnvironment();
+    const args = options.command?.(bot, task, prompt, workspace) ?? [
+      openCodeExecutable(), "run", "--pure", "--format", "json", "--model", bot.model,
+      "--agent", bot.agent, "--dir", workspace, prompt
+    ];
+    const processHandle = Bun.spawn(args, {
+      cwd: workspace, env, stdin: "ignore", stdout: "pipe", stderr: "pipe"
+    });
+    const configuredTimeout = Number(process.env.OPENCODE_BOT_TASK_TIMEOUT_MS || 900_000);
+    const timeoutMs = options.timeoutMs ?? (Number.isFinite(configuredTimeout)
+      ? Math.max(10_000, Math.min(3_600_000, configuredTimeout)) : 900_000);
+    let termination: string | null = null;
+    let killRequested = false;
+    const terminate = (reason: string) => {
+      termination ??= reason;
+      if (killRequested) return;
+      killRequested = true;
+      if (process.platform === "win32" && processHandle.pid) {
+        // Kill the full process tree: Windows CLI shims can launch children.
+        try {
+          Bun.spawnSync(["taskkill", "/PID", String(processHandle.pid), "/T", "/F"], {
+            stdout: "ignore", stderr: "ignore"
+          });
+        } catch { /* fallback below */ }
+      }
+      try { processHandle.kill("SIGKILL"); } catch { /* already exited */ }
+    };
+    const timer = setTimeout(() => terminate("OpenCode task timed out"), timeoutMs);
+    const cancelMonitor = setInterval(() => {
+      const current = store.getTask(task.id);
+      // A cancelled task can be retried before the next poll. The retry must
+      // not let the old subprocess keep running under a reused task ID.
+      if (!current || current.status !== "running" || current.attempts !== task.attempts) {
+        terminate("Task cancelled or superseded by retry");
+      }
+    }, 500);
+    const stdoutResult = readBounded(processHandle.stdout as ReadableStream<Uint8Array>, 512_000, () => terminate("Output limit exceeded"));
+    const stderrResult = readBounded(processHandle.stderr as ReadableStream<Uint8Array>, 64_000, () => terminate("Error output limit exceeded"));
+    const exitResult = processHandle.exited;
+    try {
+      const [stdout, stderr, exitCode] = await Promise.all([stdoutResult, stderrResult, exitResult]);
+      if (termination) throw new Error(termination);
+      if (exitCode !== 0) throw new Error("OpenCode exited with status " + exitCode + ": " + redact(stderr.slice(-1_000)));
+      const result = extractAssistantText(stdout);
+      if (!result) throw new Error("OpenCode returned no assistant text");
+      return result;
+    } finally {
+      clearTimeout(timer);
+      clearInterval(cancelMonitor);
+      // Do not release the worker slot while its process or pipe readers remain active.
+      await Promise.allSettled([stdoutResult, stderrResult, exitResult]);
+    }
+  };
+}
+
+export const executeOpenCode: TaskExecutor = createOpenCodeExecutor();
 
 export class BotRuntime {
   private busy = false;
