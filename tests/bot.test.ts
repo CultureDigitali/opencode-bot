@@ -164,6 +164,49 @@ describe("API security", () => {
     expect((await handle(new Request("http://127.0.0.1:4271/api/bots"))).status).toBe(200);
   });
 
+  test("tokenless API rejects a forged Host header even when the URL is loopback", async () => {
+    const db = store();
+    const handle = createHandler(db, new BotRuntime(db, async () => "done"));
+    for (const host of ["attacker.invalid:4271", "localhost.attacker.invalid", "localhost:99999", "localhost:4271@attacker.invalid"]) {
+      const reply = await handle(new Request("http://127.0.0.1:4271/api/bots", {
+        method: "POST",
+        headers: { Host: host, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Injected" })
+      }));
+      expect(reply.status).toBe(403);
+    }
+    expect(db.listBots()).toHaveLength(0);
+    expect((await handle(new Request("http://localhost:4271/api/bots", { headers: { Host: "LOCALHOST" } }))).status).toBe(200);
+    expect((await handle(new Request("http://[::1]:4271/api/bots", { headers: { Host: "[::1]:4271" } }))).status).toBe(200);
+  });
+
+  test("real loopback HTTP listener permits normal requests but rejects an attacker Host", async () => {
+    const db = store();
+    const observed: { host: string | null; urlHost: string }[] = [];
+    const handle = createHandler(db, new BotRuntime(db, async () => "done"));
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: (request) => {
+        observed.push({ host: request.headers.get("Host"), urlHost: new URL(request.url).host });
+        return handle(request);
+      }
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}/api/bots`;
+      expect((await fetch(url)).status).toBe(200);
+      const injected = await fetch(url, {
+        method: "POST",
+        headers: { Host: "attacker.invalid", "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Injected" })
+      });
+      expect(injected.status).toBe(403);
+      expect(observed[1]?.host).toBe("attacker.invalid");
+      expect(db.listBots()).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("rejects oversized request body before JSON parsing", async () => {
     const db = store();
     const handle = createHandler(db, new BotRuntime(db, async () => "done"));
@@ -185,6 +228,8 @@ describe("API security", () => {
     expect((await handle(authorized)).status).toBe(200);
     const badOrigin = new Request("http://localhost:4271/api/bots", { headers: { Authorization: "Bearer a-secret-token", Origin: "https://evil.invalid" } });
     expect((await handle(badOrigin)).status).toBe(403);
+    const lan = new Request("http://192.0.2.25:4271/api/bots", { headers: { Authorization: "Bearer a-secret-token" } });
+    expect((await handle(lan)).status).toBe(200);
   });
 
   test("rejects non-JSON form CSRF and malformed bodies", async () => {

@@ -18,6 +18,7 @@ Base: [richardanaya/opencode-cron](https://github.com/richardanaya/opencode-cron
 | GitHub hosted CI | Workflow prepared | Must verify pushed SHA |
 | Windows CI fallback | Script prepared | GitHub self-hosted runner not registered |
 | Tokenless loopback DNS-rebinding protection | Implemented | Regression reproduces prior 201 response for hostile hostname, then requires 403; normal 127.0.0.1 remains accessible |
+| Loopback Host authority consistency | Implemented | Real Bun HTTP and forged-Host regression checks; token-protected LAN requests retained |
 
 ## M2 — Production reliability
 
@@ -56,3 +57,12 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Change: reject non-loopback request URL hostnames when no bearer token is configured, with negative and positive API regressions. Token-protected LAN operation is unaffected.
 - Protected pre-existing local modifications: `dist/index.js` and `dist/index.d.ts` generated-file changes must not be staged or reset.
 - Next after this change: independently review the host validation and add real subprocess cancellation/retry regression coverage, then an isolated-account OpenCode integration harness.
+
+## Subsequent development checkpoint — 13 October 2026
+
+- Resumed local `f49f750` (one commit ahead of remote `d2cc22e`) without rewriting history.
+- Reproduced a mismatched-authority request: loopback Request URL plus hostile HTTP Host previously created a bot (201); now returns 403. Added real Bun HTTP listener tests, malformed/suffix Host rejection, local-Host compatibility and token-protected LAN compatibility checks.
+- Independent OpenCode CLI Muse Spark 1.3 Contributor Free read-only review completed. Accepted the distinction between DNS rebinding (already addressed by URL validation in `f49f750`) and separate intermediary/synthetic Host mismatches. Replaced an overly strict exact-Host comparison with loopback authority validation that accepts valid Host values omitting a port.
+- Current Windows Bun 1.4.2 tests: 17 passing. Final SHA-bound typecheck/build, published SHA and hosted CI require separate verification before declaring delivery complete.
+- Protected historical `dist/index.js` and `dist/index.d.ts` local modifications must remain unstaged. The build workflow uses backed-up copies and verifies restoration byte-for-byte.
+- Next priority: subprocess cancellation/retry integration tests, then isolated-account OpenCode worker harness.

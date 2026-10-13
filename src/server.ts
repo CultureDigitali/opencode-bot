@@ -30,6 +30,14 @@ function isLocal(host: string): boolean {
   return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
 }
 
+function isLoopbackAuthority(authority: string): boolean {
+  // Reject suffixes, credentials, whitespace and malformed ports. A Host
+  // header can omit the port even when Request.url includes it.
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?$/i.exec(authority);
+  if (!match) return false;
+  return match[1] === undefined || (Number(match[1]) >= 1 && Number(match[1]) <= 65535);
+}
+
 async function payload(request: Request): Promise<Payload> {
   if (!request.headers.get("Content-Type")?.startsWith("application/json")) {
     throw new Error("Content-Type must be application/json");
@@ -70,10 +78,11 @@ export function createHandler(store: BotStore, runtime: BotRuntime, token = "") 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = url.pathname;
-    // When no bearer token is configured, only loopback hostnames are trusted.
-    // Binding to 127.0.0.1 alone does not prevent browser DNS-rebinding attacks:
-    // a hostile hostname can resolve to loopback and present a matching Origin.
-    if (!token && !isLocal(url.hostname)) {
+    // URL hostname validation is the DNS-rebinding defense. Independently
+    // validate Host when supplied, since proxies and synthetic Requests can
+    // carry a Host authority different from Request.url.
+    const hostHeader = request.headers.get("Host");
+    if (!token && (!isLocal(url.hostname) || (hostHeader !== null && !isLoopbackAuthority(hostHeader)))) {
       return json({ error: "Loopback hostname required without a bearer token" }, 403);
     }
     if (request.method === "GET" && route === "/health") {
