@@ -1,6 +1,6 @@
 import { Cron } from "croner";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { BotStore, type Bot, type BotTask } from "./store";
 
@@ -93,7 +93,7 @@ export type OpenCodeCommand = (bot: Bot, task: BotTask, prompt: string, workspac
 
 // Command injection is used only for hermetic process integration tests.
 // Production uses the canonical OpenCode invocation and bounded timeout.
-export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number; nowMs?: () => number; windowsJobRunner?: string } = {}): TaskExecutor {
+export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; timeoutMs?: number; nowMs?: () => number; windowsJobRunner?: string; windowsJobRunnerSha256?: string } = {}): TaskExecutor {
   if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 3_600_000)) {
     throw new Error("Test timeout override must be a finite positive integer <= 3600000");
   }
@@ -123,8 +123,36 @@ export function createOpenCodeExecutor(options: { command?: OpenCodeCommand; tim
     const windowsJobRunner = process.platform === "win32"
       ? (options.windowsJobRunner ?? process.env.OPENCODE_BOT_WINDOWS_JOB_RUNNER)
       : undefined;
+    if (process.platform === "win32" && !windowsJobRunner &&
+        (options.windowsJobRunnerSha256 || process.env.OPENCODE_BOT_WINDOWS_JOB_RUNNER_SHA256)) {
+      throw new Error("Windows Job Object runner SHA-256 configured without a runner path");
+    }
+    if (windowsJobRunner && options.windowsJobRunner &&
+        !options.windowsJobRunnerSha256) {
+      throw new Error("Explicit Windows Job Object runner requires its own SHA-256 digest");
+    }
+    if (windowsJobRunner && !options.windowsJobRunner &&
+        options.windowsJobRunnerSha256) {
+      throw new Error("Explicit Windows Job Object digest requires a matching runner path");
+    }
     if (windowsJobRunner && (!isAbsolute(windowsJobRunner) || !existsSync(windowsJobRunner))) {
       throw new Error("OPENCODE_BOT_WINDOWS_JOB_RUNNER must name an existing absolute executable");
+    }
+    if (windowsJobRunner) {
+      const expected = options.windowsJobRunner
+        ? options.windowsJobRunnerSha256
+        : process.env.OPENCODE_BOT_WINDOWS_JOB_RUNNER_SHA256;
+      if (!expected || !/^[0-9a-fA-F]{64}$/.test(expected)) {
+        throw new Error("Windows Job Object runner requires a pinned SHA-256 digest");
+      }
+      const info = statSync(windowsJobRunner);
+      if (!info.isFile() || info.size <= 0 || info.size > 32 * 1024 * 1024) {
+        throw new Error("Windows Job Object runner must be a regular file no larger than 32 MiB");
+      }
+      const actual = createHash("sha256").update(readFileSync(windowsJobRunner)).digest("hex");
+      if (actual !== expected.toLowerCase()) {
+        throw new Error("Windows Job Object runner SHA-256 mismatch");
+      }
     }
     const launchArgs = windowsJobRunner ? [windowsJobRunner, String(timeoutMs), ...args] : args;
     // The injectable monotonic clock is only for deterministic integration tests.

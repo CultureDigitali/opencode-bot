@@ -144,3 +144,31 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Windows Bun 1.4.2 candidate verification: frozen-lockfile install, 28 PASS, 2 POSIX-only SKIP, 0 FAIL; typecheck and build PASS. A direct wrapper call to `scripts/local-ci.ps1` was blocked by the execution tool in this cycle; it was not independently run here.
 - Independent read-only OpenCode CLI Muse Spark 1.3 Contributor Free review of both commits: conditional PASS; no confirmed high-severity findings. Medium risks require follow-up: cached native EXE integrity, suspended child before assignment if supervisor is killed, broad inheritable handles, and no hosted Windows CI coverage.
 - Pre-existing `dist/index.js` and `dist/index.d.ts` edits remain protected. Windows Job Objects are not an OS sandbox. Next: address medium findings and validate a dedicated least-privileged account with scratch workspace before any merge, release, or deployment.
+
+## Development checkpoint - 13 October 2026 (Windows runner cache integrity)
+
+- Resumed draft PR #1 from remote SHA `55de26339d731c7cb7a9c11147c78f5ef92f2e2d`; GitHub-hosted Linux CI was green on that SHA, but Windows Job Objects were validated only locally. A clean task worktree protects unrelated `dist` changes.
+- Confirmed that `scripts/windows/build-runner.ps1` previously reused an existing `.exe` based solely on a source-hash filename. Replaced that trust assumption with a fresh, unpredictable output executable for every build. A Windows regression asserts two consecutive builds never share the same executable path.
+- Baseline Windows Bun 1.4.2 checks before this change: 28 pass, 2 POSIX-only skips, 0 fail; typecheck and build pass. Targeted candidate process tests: 7 pass, 2 POSIX-only skips, 0 fail; typecheck pass. Publication, full final checks and remote SHA-specific CI are separate gates.
+- This eliminates reuse of stale or replaced cached binaries, **not** same-account tampering after build. A signed or ACL-restricted runner and a least-privileged isolated OS account remain future security gates. Also verify behavior when the native supervisor is externally killed before suspended-child assignment.
+
+### Review gate for the cache-integrity candidate — BLOCKED
+
+- The independent read-only Muse Spark 1.3 review rejected publication of the initial fresh-executable approach. It confirmed that the runtime still accepts a configured absolute runner path without a cryptographic digest, that build-to-execution replacement remains possible, and that randomly named executables in `dist/` accumulated without cleanup.
+- The current *uncommitted* candidate moves fresh builds into individually named temporary directories to avoid accumulating ignored binaries in the repository; the targeted Windows integration tests passed (7 pass, 2 POSIX-only skips), as did typecheck. Temporary directory cleanup and executable SHA-256 binding at runtime are not implemented yet.
+- The next implementation gate is producer/consumer SHA-256 binding, a negative test of a substituted runner, bounded temporary-directory cleanup, and a fresh independent review before any commit or push. Previous green Linux CI covers only the unchanged remote SHA `55de26339d731c7cb7a9c11147c78f5ef92f2e2d`.
+
+## Development checkpoint - 13 October 2026 (SHA-bound Windows supervisor candidate)
+
+- Continued the existing uncommitted `dev/ocb-run12-runner-build` candidate without resetting tracked `dist` changes. Remote `feat/persistent-bot-runtime` still pointed to `55de26339d731c7cb7a9c11147c78f5ef92f2e2d` at intake; PR #1 remained draft and both hosted Linux CI runs for that SHA were green.
+- The independent Muse Spark 1.3 read-only review confirmed missing binary binding and temporary directory leaks. The revised candidate requires a full SHA-256 pin before each native helper launch and refuses modified executables before any child is started.
+- Builds now target unique OS temporary directories. Test-generated helpers are removed after the suite; the Windows local CI wrapper restores inherited environment settings and removes only its validated per-run temporary build directory, including on verification failure. Compilation failure also cleans its fresh temporary directory.
+- Windows Bun 1.4.2 local CI equivalent `scripts/local-ci.ps1` completed: **30 passed, 2 POSIX-only skipped, 0 failed**; `bun install --frozen-lockfile`, `bun run typecheck` and `bun run build` passed. A separate targeted run passed 8 tests with 2 POSIX skips. These are local candidate checks, **not** GitHub CI on a new commit.
+- Remaining gates: independent adversarial re-review of the **revised diff**, non-forced publication and SHA-specific GitHub Linux CI. SHA pinning does not prevent a same-account attacker swapping the binary after verification (TOCTOU); a separate least-privileged Windows account and workspace remain mandatory before release. No merge, release or deployment is authorized.
+
+### SHA-bound supervisor review reconciliation
+
+- Independent read-only Muse Spark 1.3 reviewer reported conditional PASS for the first SHA-pin and cleanup revision. Its two medium follow-ups were unpaired option/environment digests and unbounded synchronous reading of an operator-configured file. Fixed both with same-source path/digest pairing and a regular-file/32 MiB bound, then added negative Windows regressions for both conditions.
+- Final candidate trusted Windows local CI wrapper: **31 passed, 2 POSIX-only skipped, 0 failed**, plus frozen-lockfile install, TypeScript typecheck and build PASS. No required test, threshold or verification command was removed. The reviewer did not execute this local CI; the observation is from the trusted COS command output.
+- Final independent post-remediation review, non-forced publication and GitHub Linux CI on the next SHA remain separate gates. Windows Job Object runtime still needs testing under a distinct low-privilege OS identity before release.
+- Follow-up independent review gave **PASS for the development branch** and highlighted a digest-only misconfiguration that would silently fall back to legacy termination. Closed that fail-open case with a negative test; the final suite must be rerun on this last code change. The native supervisor still has a documented same-account TOCTOU limitation.

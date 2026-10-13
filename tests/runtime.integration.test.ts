@@ -1,14 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createOpenCodeExecutor } from "../src/runtime";
 import { BotStore } from "../src/store";
 
 const created: string[] = [];
 const stores: BotStore[] = [];
 const pending: Promise<unknown>[] = [];
+const runnerDirectories: string[] = [];
 
 function fixture() {
   const folder = mkdtempSync(join(tmpdir(), "ocb-process-"));
@@ -61,26 +62,48 @@ async function assertNoLateSideEffect(started: string): Promise<void> {
   expect(existsSync(started + ".late")).toBe(false);
 }
 
-function windowsRunnerPath(): string {
-  const digest = createHash("sha256")
-    .update(readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs")))
-    .digest("hex").slice(0, 16);
-  const runner = join(process.cwd(), "dist", "ocb-job-runner-" + digest + ".exe");
-  // Either Windows test must also pass when run in isolation on a fresh clone.
-  if (!existsSync(runner)) {
-    const built = Bun.spawnSync([
-      "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      join(process.cwd(), "scripts", "windows", "build-runner.ps1")
-    ], { stdout: "pipe", stderr: "pipe" });
-    expect(built.exitCode).toBe(0);
-  }
+function buildFreshWindowsRunner(): string {
+  const built = Bun.spawnSync([
+    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    join(process.cwd(), "scripts", "windows", "build-runner.ps1")
+  ], { stdout: "pipe", stderr: "pipe" });
+  expect(built.exitCode).toBe(0);
+  const runner = new TextDecoder().decode(built.stdout).trim().split(/\r?\n/).at(-1) ?? "";
   expect(existsSync(runner)).toBe(true);
+  const buildDir = dirname(runner);
+  expect(resolve(dirname(buildDir))).toBe(resolve(tmpdir()));
+  expect(/^ocb-job-runner-[0-9a-f]{32}$/.test(buildDir.split(/[\\/]/).at(-1) ?? "")).toBe(true);
+  runnerDirectories.push(buildDir);
   return runner;
+}
+function windowsRunnerDigest(runner: string): string {
+  return createHash("sha256").update(readFileSync(runner)).digest("hex");
+}
+
+let runnerBuiltForTests: string | undefined;
+function windowsRunnerPath(): string {
+  const configured = process.env.OPENCODE_BOT_WINDOWS_JOB_RUNNER;
+  if (configured) {
+    expect(existsSync(configured)).toBe(true);
+    return configured;
+  }
+  // Run from a fresh checkout or in isolation without relying on old artifacts.
+  runnerBuiltForTests ??= buildFreshWindowsRunner();
+  return runnerBuiltForTests;
 }
 afterEach(async () => {
   await Promise.allSettled(pending.splice(0));
   for (const db of stores.splice(0)) db.close();
   for (const folder of created.splice(0)) rmSync(folder, { recursive: true, force: true });
+});
+afterAll(() => {
+  for (const dir of runnerDirectories) {
+    // Only touch uniquely named build folders directly under OS temp.
+    if (resolve(dirname(dir)) === resolve(tmpdir()) &&
+        /^ocb-job-runner-[0-9a-f]{32}$/.test(dir.split(/[\\/]/).at(-1) ?? "")) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });
 
 describe("real spawned worker cancellation", () => {
@@ -151,6 +174,56 @@ describe("real spawned worker cancellation", () => {
     await assertNoLateSideEffect(started);
   });
   const windowsTest = process.platform === "win32" ? test : test.skip;
+  windowsTest("Windows runner builder never reuses a source-hash-only cached executable", () => {
+    const first = buildFreshWindowsRunner();
+    const second = buildFreshWindowsRunner();
+    expect(first).not.toBe(second);
+    expect(existsSync(first)).toBe(true);
+    expect(existsSync(second)).toBe(true);
+  });
+  windowsTest("Windows helper rejects tampering before launching a process", async () => {
+    const runner = buildFreshWindowsRunner();
+    const expected = windowsRunnerDigest(runner);
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(runner, "tampered-build");
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Runner hash rejection" });
+    const task = db.addTask({ botId: bot.id, prompt: "Must not execute", requiresApproval: false });
+    const claimed = db.claim()!;
+    const execute = createOpenCodeExecutor({
+      command: () => [process.execPath, script, "slow", started],
+      timeoutMs: 900, windowsJobRunner: runner, windowsJobRunnerSha256: expected
+    });
+    await expect(execute(bot, claimed, [], db)).rejects.toThrow("SHA-256 mismatch");
+    expect(existsSync(started)).toBe(false);
+  });
+  windowsTest("Windows runner rejects an unpaired override and an oversized executable", async () => {
+    const runner = buildFreshWindowsRunner();
+    const { script, started } = fixture();
+    const db = new BotStore(":memory:");
+    stores.push(db);
+    const bot = db.addBot({ name: "Native runner validation" });
+    const task = db.addTask({ botId: bot.id, prompt: "Must not execute", requiresApproval: false });
+    const claimed = db.claim()!;
+    const command = () => [process.execPath, script, "slow", started];
+    // Even if local CI set an ambient digest, an explicit path override must
+    // supply its own matching digest rather than inheriting unrelated trust.
+    await expect(createOpenCodeExecutor({ command, windowsJobRunner: runner, timeoutMs: 900 })(
+      bot, claimed, [], db
+    )).rejects.toThrow("requires its own SHA-256");
+    await expect(createOpenCodeExecutor({
+      command, windowsJobRunner: "", windowsJobRunnerSha256: "0".repeat(64), timeoutMs: 900
+    })(bot, claimed, [], db)).rejects.toThrow("configured without a runner path");
+    const oversized = join(dirname(script), "oversized-runner.exe");
+    writeFileSync(oversized, "");
+    truncateSync(oversized, 33 * 1024 * 1024);
+    await expect(createOpenCodeExecutor({
+      command, windowsJobRunner: oversized, windowsJobRunnerSha256: "0".repeat(64), timeoutMs: 900
+    })(bot, claimed, [], db)).rejects.toThrow("32 MiB");
+    expect(existsSync(started)).toBe(false);
+  });
   windowsTest("Windows Job Object enforces a deadline and stops inherited-pipe grandchildren", async () => {
     const runner = windowsRunnerPath();
     const { script, started } = fixture();
@@ -162,7 +235,8 @@ describe("real spawned worker cancellation", () => {
     const execute = createOpenCodeExecutor({
       command: () => [process.execPath, script, "tree", started],
       timeoutMs: 900,
-      windowsJobRunner: runner
+      windowsJobRunner: runner,
+      windowsJobRunnerSha256: windowsRunnerDigest(runner)
     });
     const running = execute(bot, claimed, [], db);
     pending.push(running);
@@ -183,7 +257,8 @@ describe("real spawned worker cancellation", () => {
     const execute = createOpenCodeExecutor({
       command: () => [process.execPath, script, "escaped", started],
       timeoutMs: 900,
-      windowsJobRunner: runner
+      windowsJobRunner: runner,
+      windowsJobRunnerSha256: windowsRunnerDigest(runner)
     });
     const running = execute(bot, claimed, [], db);
     pending.push(running);
