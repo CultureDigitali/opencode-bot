@@ -206,3 +206,12 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - The separate native double-build test keeps both builds and assertions with a 20-second timeout to cover observed Windows compiler latency; no checks were skipped. `dist` build artifacts remain unstaged.
 - OpenCode Muse Spark 1.3 Contributor Free was unavailable during this run. Fresh independent review, separate least-privileged OS identity, inherited handle restriction and same-account TOCTOU remain outstanding.
 - Publication, verified remote SHA and SHA-specific hosted Linux CI are pending. No merge or deployment authorized.
+
+## Development checkpoint - 18 October 2026 (Windows inherited handle filtering)
+
+- Started from published SHA `223b0d27365ff32eb15be4752ba26a321ebee4f5`, PR #1 draft, green hosted CI runs 39136599563 and 39136602373.
+- Isolated `dev/ocb-handle-list-20261018` worktree on G: preserves all older worktree edits. Baseline local CI: 33 pass, 2 POSIX skips, typecheck and build PASS.
+- Confirmed a leaked ambient Windows inheritable event in the old native helper. The negative-control probe returned `AMBIENT_HANDLE_EXPOSED`; after adding `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, the probe returned `AMBIENT_HANDLE_FILTERED`.
+- New Windows regression and existing native process-tree suite: 12 pass, 2 POSIX skips. A distinct low-privilege OS identity and same-account TOCTOU hardening remain necessary before production.
+- Final trusted Windows `scripts/local-ci.ps1` passed: frozen install, 34 tests passed, 2 POSIX-only skips, TypeScript typecheck and build. No checks were weakened.
+- The exact Muse Spark 1.3 Contributor Free model was not present in the installed OpenCode model list; separate ChatGPT reviewer invocation was blocked. Independent review remains outstanding; commit/push and SHA-specific hosted CI need their own observations. No merge or deployment authorized.

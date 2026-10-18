@@ -13,6 +13,7 @@ public static class JobRunner
     private const uint CREATE_NO_WINDOW = 0x08000000;
     private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     private const int PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
+    private const int PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
     private const uint STARTF_USESTDHANDLES = 0x100;
     private const uint KILL_ON_JOB_CLOSE = 0x2000;
     private const uint WAIT_TIMEOUT = 258;
@@ -142,7 +143,7 @@ public static class JobRunner
     {
         IntPtr job = IntPtr.Zero, process = IntPtr.Zero, thread = IntPtr.Zero;
         IntPtr stdin = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
-        IntPtr attributeList = IntPtr.Zero, jobHandleList = IntPtr.Zero;
+        IntPtr attributeList = IntPtr.Zero, jobHandleList = IntPtr.Zero, stdHandleList = IntPtr.Zero;
         bool attributeListInitialized = false;
         try
         {
@@ -166,16 +167,27 @@ public static class JobRunner
             // The job-list attribute binds the new process in the same kernel
             // operation that creates it. A separate AssignProcessToJobObject
             // call has a fatal orphan window if the supervisor is killed.
+            // Limit inheritance to the stdio duplicates even if a parent
+            // accidentally left unrelated handles inheritable.
+            var allowedHandles = new List<IntPtr>();
+            if (stdin != IntPtr.Zero) allowedHandles.Add(stdin);
+            allowedHandles.Add(stdout);
+            allowedHandles.Add(stderr);
             IntPtr attributeBytes = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes);
-            if (attributeBytes == IntPtr.Zero) throw new InvalidOperationException("Job-list attribute sizing failed");
+            InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref attributeBytes);
+            if (attributeBytes == IntPtr.Zero) throw new InvalidOperationException("Process attribute sizing failed");
             attributeList = Marshal.AllocHGlobal(attributeBytes);
-            Must(InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeBytes), "InitializeProcThreadAttributeList");
+            Must(InitializeProcThreadAttributeList(attributeList, 2, 0, ref attributeBytes), "InitializeProcThreadAttributeList");
             attributeListInitialized = true;
             jobHandleList = Marshal.AllocHGlobal(IntPtr.Size);
             Marshal.WriteIntPtr(jobHandleList, job);
             Must(UpdateProcThreadAttribute(attributeList, 0, new IntPtr(PROC_THREAD_ATTRIBUTE_JOB_LIST), jobHandleList,
                 new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "UpdateProcThreadAttribute(JOB_LIST)");
+            stdHandleList = Marshal.AllocHGlobal(allowedHandles.Count * IntPtr.Size);
+            for (int i = 0; i < allowedHandles.Count; i++)
+                Marshal.WriteIntPtr(stdHandleList, i * IntPtr.Size, allowedHandles[i]);
+            Must(UpdateProcThreadAttribute(attributeList, 0, new IntPtr(PROC_THREAD_ATTRIBUTE_HANDLE_LIST), stdHandleList,
+                new IntPtr(allowedHandles.Count * IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "UpdateProcThreadAttribute(HANDLE_LIST)");
             var startup = new STARTUPINFOEX();
             startup.StartupInfo.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFOEX));
             startup.StartupInfo.flags = STARTF_USESTDHANDLES;
@@ -217,6 +229,7 @@ public static class JobRunner
             if (attributeListInitialized) DeleteProcThreadAttributeList(attributeList);
             if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
             if (jobHandleList != IntPtr.Zero) Marshal.FreeHGlobal(jobHandleList);
+            if (stdHandleList != IntPtr.Zero) Marshal.FreeHGlobal(stdHandleList);
             if (thread != IntPtr.Zero) CloseHandle(thread);
             if (process != IntPtr.Zero) CloseHandle(process);
             if (stdin != IntPtr.Zero) CloseHandle(stdin);

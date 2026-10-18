@@ -180,6 +180,8 @@ describe("real spawned worker cancellation", () => {
     // structural regression alongside the real process-tree tests.
     const source = readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs"), "utf8");
     expect(source).toContain("PROC_THREAD_ATTRIBUTE_JOB_LIST");
+    expect(source).toContain("PROC_THREAD_ATTRIBUTE_HANDLE_LIST");
+    expect(source).toContain("UpdateProcThreadAttribute(HANDLE_LIST)");
     expect(source).toContain("EXTENDED_STARTUPINFO_PRESENT");
     expect(source).toContain("UpdateProcThreadAttribute(");
     expect(source).not.toMatch(/\bAssignProcessToJobObject\s*\(/);
@@ -194,6 +196,18 @@ describe("real spawned worker cancellation", () => {
     expect(existsSync(first)).toBe(true);
     expect(existsSync(second)).toBe(true);
   }, 20000); // Two separate C# compilations exceed Bun's 5s default on loaded Windows hosts.
+  windowsTest("Windows worker filters an unrelated inheritable event", () => {
+    const folder = mkdtempSync(join(tmpdir(), "ocb-inheritance-"));
+    created.push(folder);
+    const resultPath = join(folder, "result.txt");
+    const result = Bun.spawnSync([
+      "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+      join(process.cwd(), "tests", "windows", "run-handle-inheritance-probe.ps1"),
+      windowsRunnerPath(), resultPath, join(folder, "Probe.exe")
+    ], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(resultPath, "utf8")).toBe("FILTERED");
+  }, 20000);
   windowsTest("Windows helper rejects tampering before launching a process", async () => {
     const runner = buildFreshWindowsRunner();
     const expected = windowsRunnerDigest(runner);
