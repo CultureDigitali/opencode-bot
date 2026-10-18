@@ -20,7 +20,7 @@ Security findings can be shared privately with the repository maintainers at Cul
 
 ## Current limitations
 
-The Windows native helper now filters unrelated inheritable handles using the explicit process handle-list attribute; this is not an OS sandbox.
+The Windows native helper now filters unrelated inheritable handles using the explicit process handle-list attribute; this is not an OS sandbox. The opt-in `scripts/windows/check-worker-isolation.ps1` preflight rejects a shared OS identity, an administrator worker token, a readable or missing operator canary, and a nonwritable scratch workspace. Its Windows regression tests currently prove **rejection cases only**. A successful real two-account worker/OpenCode subprocess run is still required; see `docs/WINDOWS_ISOLATION_SMOKE.md`.
 
 - There is no separate OS sandbox, multi-user RBAC, encrypted credential vault or independent permission enforcement within the worker.
 - Task timeout and cancellation terminate the OpenCode subprocess tree where supported, but external side effects performed before cancellation cannot be rolled back.

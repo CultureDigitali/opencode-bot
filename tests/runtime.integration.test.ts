@@ -196,6 +196,37 @@ describe("real spawned worker cancellation", () => {
     expect(existsSync(first)).toBe(true);
     expect(existsSync(second)).toBe(true);
   }, 20000); // Two separate C# compilations exceed Bun's 5s default on loaded Windows hosts.
+  windowsTest("OS-isolation preflight rejects shared identity, readable and missing canaries", () => {
+    const folder = mkdtempSync(join(tmpdir(), "ocb-isolation-preflight-"));
+    created.push(folder);
+    const canary = join(folder, "operator-canary.txt");
+    writeFileSync(canary, "negative-control fixture");
+    const identity = Bun.spawnSync([
+      "powershell.exe", "-NoProfile", "-Command",
+      "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+    ], { stdout: "pipe", stderr: "pipe" });
+    expect(identity.exitCode).toBe(0);
+    const operatorSid = new TextDecoder().decode(identity.stdout).trim();
+    expect(operatorSid).toMatch(/^S-1-[0-9-]+$/);
+    const script = join(process.cwd(), "scripts", "windows", "check-worker-isolation.ps1");
+    const invoke = (sid: string, path = canary) => Bun.spawnSync([
+      "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+      "-OperatorSid", sid, "-Workspace", folder, "-ProtectedCanary", path
+    ], { stdout: "pipe", stderr: "pipe" });
+    const sameIdentity = invoke(operatorSid);
+    expect(sameIdentity.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(sameIdentity.stderr)).toContain("same OS identity");
+    const differentSid = operatorSid === "S-1-5-18" ? "S-1-5-19" : "S-1-5-18";
+    const readableCanary = invoke(differentSid);
+    expect(readableCanary.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(readableCanary.stderr)).toContain("canary was readable");
+    const missingCanary = invoke(differentSid, join(folder, "missing-canary.txt"));
+    expect(missingCanary.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(missingCanary.stderr)).toContain("cannot prove the operator canary");
+    const directoryCanary = invoke(differentSid, folder);
+    expect(directoryCanary.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(directoryCanary.stderr)).toContain("canary is a directory");
+  }, 20000);
   windowsTest("Windows worker filters an unrelated inheritable event", () => {
     const folder = mkdtempSync(join(tmpdir(), "ocb-inheritance-"));
     created.push(folder);
@@ -225,7 +256,7 @@ describe("real spawned worker cancellation", () => {
     });
     await expect(execute(bot, claimed, [], db)).rejects.toThrow("SHA-256 mismatch");
     expect(existsSync(started)).toBe(false);
-  });
+  }, 20000); // Native C# compilation can exceed Bun's default 5s on a loaded Windows host.
   windowsTest("Windows runner rejects an unpaired override and an oversized executable", async () => {
     const runner = buildFreshWindowsRunner();
     const { script, started } = fixture();
@@ -250,7 +281,7 @@ describe("real spawned worker cancellation", () => {
       command, windowsJobRunner: oversized, windowsJobRunnerSha256: "0".repeat(64), timeoutMs: 900
     })(bot, claimed, [], db)).rejects.toThrow("32 MiB");
     expect(existsSync(started)).toBe(false);
-  });
+  }, 20000); // Preserve all negative security assertions while allowing real compilation.
   windowsTest("Windows Job Object enforces a deadline and stops inherited-pipe grandchildren", async () => {
     const runner = windowsRunnerPath();
     const { script, started } = fixture();
