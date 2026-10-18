@@ -15,6 +15,6 @@
     "noEmit": false,
     "types": ["bun"]
   },
-  "include": ["index.ts"],
+  "include": ["index.ts", "src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

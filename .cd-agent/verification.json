@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "checks": [
+    {
+      "id": "test",
+      "command": ["bun", "test"],
+      "cwd": ".",
+      "timeout_seconds": 900,
+      "required": true
+    },
+    {
+      "id": "types",
+      "command": ["bun", "run", "typecheck"],
+      "cwd": ".",
+      "timeout_seconds": 900,
+      "required": true
+    },
+    {
+      "id": "build",
+      "command": ["bun", "run", "build"],
+      "cwd": ".",
+      "timeout_seconds": 900,
+      "required": true
+    }
+  ]
+}
