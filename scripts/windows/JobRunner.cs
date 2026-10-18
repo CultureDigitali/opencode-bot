@@ -1,16 +1,18 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// Native Windows supervisor. Starts the child SUSPENDED, assigns it to a
-// kill-on-close job, then resumes it. No child code executes before assignment.
+// Native Windows supervisor. Windows 10+ atomically assigns the new child
+// to a kill-on-close job at CreateProcess time via STARTUPINFOEX.
+// A separately terminated supervisor cannot strand an unassigned suspended child.
 public static class JobRunner
 {
-    private const uint CREATE_SUSPENDED = 4;
     private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    private const int PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
     private const uint STARTF_USESTDHANDLES = 0x100;
     private const uint KILL_ON_JOB_CLOSE = 0x2000;
     private const uint WAIT_TIMEOUT = 258;
@@ -47,6 +49,12 @@ public static class JobRunner
         public IntPtr reserved2, input, output, error;
     }
     [StructLayout(LayoutKind.Sequential)]
+    private struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr AttributeList;
+    }
+    [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_INFORMATION
     {
         public IntPtr process, thread;
@@ -60,12 +68,16 @@ public static class JobRunner
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateProcessW(string application, StringBuilder commandLine, IntPtr pSecurity, IntPtr tSecurity,
-        [MarshalAs(UnmanagedType.Bool)]bool inherit, uint flags, IntPtr environment, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION pi);
+        [MarshalAs(UnmanagedType.Bool)]bool inherit, uint flags, IntPtr environment, string cwd, ref STARTUPINFOEX startup, out PROCESS_INFORMATION pi);
     [DllImport("kernel32.dll", SetLastError=true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    private static extern bool InitializeProcThreadAttributeList(IntPtr attributes, int count, uint flags, ref IntPtr size);
     [DllImport("kernel32.dll", SetLastError=true)]
-    private static extern uint ResumeThread(IntPtr thread);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UpdateProcThreadAttribute(IntPtr attributes, uint flags, IntPtr attribute, IntPtr value,
+        IntPtr valueSize, IntPtr previousValue, IntPtr returnSize);
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(IntPtr attributes);
     [DllImport("kernel32.dll", SetLastError=true)]
     private static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -130,7 +142,8 @@ public static class JobRunner
     {
         IntPtr job = IntPtr.Zero, process = IntPtr.Zero, thread = IntPtr.Zero;
         IntPtr stdin = IntPtr.Zero, stdout = IntPtr.Zero, stderr = IntPtr.Zero;
-        bool assigned = false;
+        IntPtr attributeList = IntPtr.Zero, jobHandleList = IntPtr.Zero;
+        bool attributeListInitialized = false;
         try
         {
             job = CreateJobObjectW(IntPtr.Zero, null);
@@ -150,12 +163,26 @@ public static class JobRunner
             stdout = InheritableStdHandle(-11);
             stderr = InheritableStdHandle(-12);
             if (stdout == IntPtr.Zero || stderr == IntPtr.Zero) throw new InvalidOperationException("No stdout/stderr handles");
-            var startup = new STARTUPINFO();
-            startup.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
-            startup.flags = STARTF_USESTDHANDLES;
-            startup.input = stdin;
-            startup.output = stdout;
-            startup.error = stderr;
+            // The job-list attribute binds the new process in the same kernel
+            // operation that creates it. A separate AssignProcessToJobObject
+            // call has a fatal orphan window if the supervisor is killed.
+            IntPtr attributeBytes = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeBytes);
+            if (attributeBytes == IntPtr.Zero) throw new InvalidOperationException("Job-list attribute sizing failed");
+            attributeList = Marshal.AllocHGlobal(attributeBytes);
+            Must(InitializeProcThreadAttributeList(attributeList, 1, 0, ref attributeBytes), "InitializeProcThreadAttributeList");
+            attributeListInitialized = true;
+            jobHandleList = Marshal.AllocHGlobal(IntPtr.Size);
+            Marshal.WriteIntPtr(jobHandleList, job);
+            Must(UpdateProcThreadAttribute(attributeList, 0, new IntPtr(PROC_THREAD_ATTRIBUTE_JOB_LIST), jobHandleList,
+                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero), "UpdateProcThreadAttribute(JOB_LIST)");
+            var startup = new STARTUPINFOEX();
+            startup.StartupInfo.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFOEX));
+            startup.StartupInfo.flags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.input = stdin;
+            startup.StartupInfo.output = stdout;
+            startup.StartupInfo.error = stderr;
+            startup.AttributeList = attributeList;
             var parts = new List<string>();
             parts.Add(executable);
             parts.AddRange(arguments);
@@ -163,13 +190,11 @@ public static class JobRunner
             if (raw.Length >= 32760) throw new InvalidOperationException("Command line exceeds Windows limit");
             var command = new StringBuilder(raw);
             PROCESS_INFORMATION pi;
-            Must(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+            Must(CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, true,
+                CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                 IntPtr.Zero, cwd, ref startup, out pi), "CreateProcessW");
             process = pi.process;
             thread = pi.thread;
-            Must(AssignProcessToJobObject(job, process), "AssignProcessToJobObject");
-            assigned = true;
-            if (ResumeThread(thread) == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
             CloseHandle(thread);
             thread = IntPtr.Zero;
             uint result = WaitForSingleObject(process, timeout);
@@ -187,7 +212,11 @@ public static class JobRunner
         }
         finally
         {
-            if (process != IntPtr.Zero && !assigned) TerminateProcess(process, 125);
+            // The child was assigned to the job atomically during creation;
+            // closing the job fails closed even if this supervisor is killed.
+            if (attributeListInitialized) DeleteProcThreadAttributeList(attributeList);
+            if (attributeList != IntPtr.Zero) Marshal.FreeHGlobal(attributeList);
+            if (jobHandleList != IntPtr.Zero) Marshal.FreeHGlobal(jobHandleList);
             if (thread != IntPtr.Zero) CloseHandle(thread);
             if (process != IntPtr.Zero) CloseHandle(process);
             if (stdin != IntPtr.Zero) CloseHandle(stdin);

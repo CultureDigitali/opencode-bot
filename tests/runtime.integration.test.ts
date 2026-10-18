@@ -173,6 +173,19 @@ describe("real spawned worker cancellation", () => {
     expect(existsSync(started)).toBe(true);
     await assertNoLateSideEffect(started);
   });
+  test("Windows native helper cannot regress to a post-creation job assignment", () => {
+    // The supervisor-kill test below checks containment after the child
+    // starts. It cannot catch a suspended, unassigned orphan killed in the
+    // tiny window BEFORE the old AssignProcessToJobObject call. Keep this
+    // structural regression alongside the real process-tree tests.
+    const source = readFileSync(join(process.cwd(), "scripts", "windows", "JobRunner.cs"), "utf8");
+    expect(source).toContain("PROC_THREAD_ATTRIBUTE_JOB_LIST");
+    expect(source).toContain("EXTENDED_STARTUPINFO_PRESENT");
+    expect(source).toContain("UpdateProcThreadAttribute(");
+    expect(source).not.toMatch(/\bAssignProcessToJobObject\s*\(/);
+    expect(source).not.toMatch(/\bResumeThread\s*\(/);
+    expect(source).not.toMatch(/\bCREATE_SUSPENDED\b/);
+  });
   const windowsTest = process.platform === "win32" ? test : test.skip;
   windowsTest("Windows runner builder never reuses a source-hash-only cached executable", () => {
     const first = buildFreshWindowsRunner();
@@ -180,7 +193,7 @@ describe("real spawned worker cancellation", () => {
     expect(first).not.toBe(second);
     expect(existsSync(first)).toBe(true);
     expect(existsSync(second)).toBe(true);
-  });
+  }, 20000); // Two separate C# compilations exceed Bun's 5s default on loaded Windows hosts.
   windowsTest("Windows helper rejects tampering before launching a process", async () => {
     const runner = buildFreshWindowsRunner();
     const expected = windowsRunnerDigest(runner);
@@ -265,6 +278,34 @@ describe("real spawned worker cancellation", () => {
     await waitFor(started + ".grandchild");
     await expect(running).rejects.toThrow("Windows Job Object");
     await assertNoLateSideEffect(started);
+  });
+  windowsTest("force-killing the Windows supervisor closes the job and kills descendants", async () => {
+    const runner = windowsRunnerPath();
+    const { script, started } = fixture();
+    // Kill ONLY the supervisor PID. /T would conceal an incorrectly configured
+    // kill-on-close Job Object by making taskkill clean up descendants itself.
+    const supervisor = Bun.spawn([runner, "7000", process.execPath, script, "tree", started], {
+      stdin: "ignore", stdout: "ignore", stderr: "ignore"
+    });
+    const exit = supervisor.exited;
+    pending.push(exit);
+    try {
+      await waitFor(started + ".grandchild");
+      const killed = Bun.spawnSync(["taskkill", "/PID", String(supervisor.pid), "/F"], {
+        stdin: "ignore", stdout: "ignore", stderr: "ignore"
+      });
+      expect(killed.exitCode).toBe(0);
+      await Promise.race([
+        exit,
+        Bun.sleep(3000).then(() => { throw new Error("Windows supervisor did not exit after termination"); })
+      ]);
+      await assertNoLateSideEffect(started);
+    } finally {
+      // If the assertion fails, only touch the exact helper PID created here.
+      if (supervisor.exitCode === null) {
+        try { supervisor.kill(); } catch { /* already terminated */ }
+      }
+    }
   });
   const posixTest = process.platform === "win32" ? test.skip : test;
   posixTest("POSIX timeout stops ordinary inherited-pipe grandchildren", async () => {
