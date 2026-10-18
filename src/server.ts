@@ -100,7 +100,10 @@ export function createHandler(store: BotStore, runtime: BotRuntime, token = "") 
     const origin = request.headers.get("Origin");
     if (origin) {
       try {
-        if (new URL(origin).host !== url.host) return json({ error: "Cross-origin requests are disabled" }, 403);
+        const parsedOrigin = new URL(origin);
+        if (token ? parsedOrigin.host !== url.host : parsedOrigin.origin !== url.origin) {
+          return json({ error: "Cross-origin requests are disabled" }, 403);
+        }
       } catch {
         return json({ error: "Invalid Origin" }, 403);
       }

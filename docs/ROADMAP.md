@@ -172,3 +172,12 @@ Inspect branch, HEAD, protected changes and verification contract. Choose the hi
 - Final candidate trusted Windows local CI wrapper: **31 passed, 2 POSIX-only skipped, 0 failed**, plus frozen-lockfile install, TypeScript typecheck and build PASS. No required test, threshold or verification command was removed. The reviewer did not execute this local CI; the observation is from the trusted COS command output.
 - Final independent post-remediation review, non-forced publication and GitHub Linux CI on the next SHA remain separate gates. Windows Job Object runtime still needs testing under a distinct low-privilege OS identity before release.
 - Follow-up independent review gave **PASS for the development branch** and highlighted a digest-only misconfiguration that would silently fall back to legacy termination. Closed that fail-open case with a negative test; the final suite must be rerun on this last code change. The native supervisor still has a documented same-account TOCTOU limitation.
+
+## Development checkpoint - 18 October 2026 (Origin validation)
+- Base: PR #1 draft; separate worktree on G: preserves the original checkout.
+- Base SHA 5b919abe5f9e5d7eac9de815245c1e423a07fc86. Baseline Windows Bun 1.4.2: 31 passed, 2 POSIX skips, 0 failures; frozen install, types and build passed.
+- Fixed tokenless loopback Origin comparison to include protocol, host and port. Bearer-protected requests retain host/port comparison for HTTPS-terminating proxies.
+- Regression asserts rejection of HTTPS Origin against an HTTP tokenless endpoint; original file edits and unrelated work are protected.
+- Next: isolated low-privilege OS account integration harness; no merge, release or deployment.
+- Post-change Windows local CI ultimately passed: 31 tests passed, 2 POSIX-only skipped, 0 failures; frozen install, typecheck and build passed. Two earlier attempts failed in existing Windows runner compilation tests at the 5-second Bun timeout; this intermittent gate remains a reliability follow-up.
+- Muse Spark 1.3 Contributor Free was unavailable in the installed OpenCode CLI; a fallback Cerebras reviewer was blocked by account billing. Independent model review was not obtained in this run; publication is for draft PR review only.

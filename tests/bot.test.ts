@@ -228,6 +228,11 @@ describe("API security", () => {
     expect((await handle(authorized)).status).toBe(200);
     const badOrigin = new Request("http://localhost:4271/api/bots", { headers: { Authorization: "Bearer a-secret-token", Origin: "https://evil.invalid" } });
     expect((await handle(badOrigin)).status).toBe(403);
+    const unprotected = createHandler(db, runtime);
+    const crossScheme = new Request("http://localhost:4271/api/bots", {
+      headers: { Origin: "https://localhost:4271" }
+    });
+    expect((await unprotected(crossScheme)).status).toBe(403);
     const lan = new Request("http://192.0.2.25:4271/api/bots", { headers: { Authorization: "Bearer a-secret-token" } });
     expect((await handle(lan)).status).toBe(200);
   });
